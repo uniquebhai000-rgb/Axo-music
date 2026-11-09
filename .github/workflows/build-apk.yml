@@ -128,60 +128,6 @@ jobs:
               </application>
           </manifest>
           AXOEOF
-          mkdir -p "$(dirname app/src/main/java/com/axo/music/Data.kt)"
-          cat > app/src/main/java/com/axo/music/Data.kt <<'AXOEOF'
-          package com.axo.music
-
-          import retrofit2.Retrofit
-          import retrofit2.converter.gson.GsonConverterFactory
-          import retrofit2.http.GET
-          import retrofit2.http.Query
-
-          data class Track(
-              val id: String,
-              val name: String,
-              val artist_name: String,
-              val album_name: String? = null,
-              val duration: Int = 0,
-              val image: String? = null,
-              val audio: String? = null,
-              val audiodownload: String? = null,
-              val audiodownload_allowed: Boolean? = null,
-          )
-
-          data class TracksResponse(val results: List<Track> = emptyList())
-
-          interface JamendoApi {
-              @GET("tracks/")
-              suspend fun tracks(
-                  @Query("client_id") clientId: String,
-                  @Query("format") format: String = "json",
-                  @Query("limit") limit: Int = 30,
-                  @Query("search") search: String? = null,
-                  @Query("tags") tags: String? = null,
-                  @Query("order") order: String? = null,
-                  @Query("imagesize") imageSize: Int = 500,
-                  @Query("audioformat") audioFormat: String = "mp32",
-                  @Query("audiodlformat") audioDlFormat: String = "mp32",
-              ): TracksResponse
-          }
-
-          /** Catalog provider backed by Jamendo (Creative Commons licensed music, streaming allowed). */
-          object Catalog {
-              private val api: JamendoApi = Retrofit.Builder()
-                  .baseUrl("https://api.jamendo.com/v3.0/")
-                  .addConverterFactory(GsonConverterFactory.create())
-                  .build().create(JamendoApi::class.java)
-
-              private val id get() = BuildConfig.JAMENDO_CLIENT_ID
-
-              val configured get() = id.isNotBlank()
-
-              suspend fun trending() = api.tracks(id, order = "popularity_week").results.filter { !it.audio.isNullOrBlank() }
-              suspend fun search(q: String) = api.tracks(id, search = q).results.filter { !it.audio.isNullOrBlank() }
-              suspend fun byTag(tag: String) = api.tracks(id, tags = tag, order = "popularity_month").results.filter { !it.audio.isNullOrBlank() }
-          }
-          AXOEOF
           mkdir -p "$(dirname app/src/main/java/com/axo/music/PlaybackService.kt)"
           cat > app/src/main/java/com/axo/music/PlaybackService.kt <<'AXOEOF'
           package com.axo.music
@@ -215,145 +161,6 @@ jobs:
                   session = null
                   super.onDestroy()
               }
-          }
-          AXOEOF
-          mkdir -p "$(dirname app/src/main/java/com/axo/music/MusicViewModel.kt)"
-          cat > app/src/main/java/com/axo/music/MusicViewModel.kt <<'AXOEOF'
-          package com.axo.music
-
-          import android.app.Application
-          import android.content.ComponentName
-          import android.content.Context
-          import androidx.compose.runtime.getValue
-          import androidx.compose.runtime.mutableStateOf
-          import androidx.compose.runtime.setValue
-          import androidx.lifecycle.AndroidViewModel
-          import androidx.lifecycle.viewModelScope
-          import androidx.media3.common.MediaItem
-          import androidx.media3.common.MediaMetadata
-          import androidx.media3.common.Player
-          import androidx.media3.session.MediaController
-          import androidx.media3.session.SessionToken
-          import com.google.common.util.concurrent.MoreExecutors
-          import com.google.gson.Gson
-          import com.google.gson.reflect.TypeToken
-          import kotlinx.coroutines.delay
-          import kotlinx.coroutines.launch
-
-          class MusicViewModel(app: Application) : AndroidViewModel(app) {
-              private val prefs = app.getSharedPreferences("axo", Context.MODE_PRIVATE)
-              private val gson = Gson()
-              private var controller: MediaController? = null
-              private var queue: List<Track> = emptyList()
-
-              var trending by mutableStateOf<List<Track>>(emptyList())
-              var chill by mutableStateOf<List<Track>>(emptyList())
-              var electronic by mutableStateOf<List<Track>>(emptyList())
-              var results by mutableStateOf<List<Track>>(emptyList())
-              var loading by mutableStateOf(false)
-              var error by mutableStateOf<String?>(null)
-              var searched by mutableStateOf(false)
-
-              var current by mutableStateOf<Track?>(null)
-              var isPlaying by mutableStateOf(false)
-              var position by mutableStateOf(0L)
-              var duration by mutableStateOf(0L)
-              var shuffle by mutableStateOf(false)
-              var repeat by mutableStateOf(Player.REPEAT_MODE_OFF)
-              var liked by mutableStateOf(loadLiked())
-
-              init {
-                  connect()
-                  loadHome()
-                  viewModelScope.launch {
-                      while (true) {
-                          controller?.let {
-                              position = it.currentPosition
-                              duration = it.duration.coerceAtLeast(0L)
-                          }
-                          delay(500)
-                      }
-                  }
-              }
-
-              private fun connect() {
-                  val ctx = getApplication<Application>()
-                  val token = SessionToken(ctx, ComponentName(ctx, PlaybackService::class.java))
-                  val future = MediaController.Builder(ctx, token).buildAsync()
-                  future.addListener({
-                      val c = future.get()
-                      controller = c
-                      c.addListener(object : Player.Listener {
-                          override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
-                          override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
-                              current = queue.firstOrNull { it.id == item?.mediaId }
-                          }
-                      })
-                  }, MoreExecutors.directExecutor())
-              }
-
-              fun loadHome() = viewModelScope.launch {
-                  if (!Catalog.configured) {
-                      error = "Add your free Jamendo client ID (see README) to load music."
-                      return@launch
-                  }
-                  loading = true; error = null
-                  try {
-                      trending = Catalog.trending()
-                      chill = Catalog.byTag("chillout")
-                      electronic = Catalog.byTag("electronic")
-                  } catch (e: Exception) { error = "Could not load music: ${e.message}" }
-                  loading = false
-              }
-
-              fun search(q: String) = viewModelScope.launch {
-                  if (q.isBlank() || !Catalog.configured) return@launch
-                  loading = true; error = null; searched = true
-                  try { results = Catalog.search(q) } catch (e: Exception) { error = "Search failed: ${e.message}" }
-                  loading = false
-              }
-
-              fun play(list: List<Track>, index: Int) {
-                  val c = controller ?: return
-                  queue = list
-                  val items = list.map { t ->
-                      MediaItem.Builder().setMediaId(t.id).setUri(t.audio)
-                          .setMediaMetadata(
-                              MediaMetadata.Builder().setTitle(t.name).setArtist(t.artist_name)
-                                  .setAlbumTitle(t.album_name)
-                                  .setArtworkUri(t.image?.let { android.net.Uri.parse(it) }).build()
-                          ).build()
-                  }
-                  c.setMediaItems(items, index, 0L)
-                  c.prepare(); c.play()
-                  current = list[index]
-              }
-
-              fun togglePlay() { controller?.let { if (it.isPlaying) it.pause() else it.play() } }
-              fun next() { controller?.seekToNextMediaItem() }
-              fun previous() { controller?.seekToPreviousMediaItem() }
-              fun seekTo(ms: Long) { controller?.seekTo(ms) }
-              fun skip(ms: Long) { controller?.let { it.seekTo((it.currentPosition + ms).coerceAtLeast(0)) } }
-              fun toggleShuffle() { shuffle = !shuffle; controller?.shuffleModeEnabled = shuffle }
-              fun cycleRepeat() {
-                  repeat = when (repeat) {
-                      Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-                      Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-                      else -> Player.REPEAT_MODE_OFF
-                  }
-                  controller?.repeatMode = repeat
-              }
-
-              fun toggleLike(t: Track) {
-                  liked = if (liked.any { it.id == t.id }) liked.filterNot { it.id == t.id } else liked + t
-                  prefs.edit().putString("liked", gson.toJson(liked)).apply()
-              }
-
-              private fun loadLiked(): List<Track> = try {
-                  gson.fromJson(prefs.getString("liked", "[]"), object : TypeToken<List<Track>>() {}.type) ?: emptyList()
-              } catch (e: Exception) { emptyList() }
-
-              override fun onCleared() { controller?.release(); super.onCleared() }
           }
           AXOEOF
           mkdir -p "$(dirname app/src/main/java/com/axo/music/MainActivity.kt)"
@@ -401,17 +208,299 @@ jobs:
               }
           }
           AXOEOF
-          mkdir -p "$(dirname app/src/main/java/com/axo/music/Screens.kt)"
+          echo part1-ok          mkdir -p "$(dirname app/src/main/java/com/axo/music/Data.kt)"
+          cat > app/src/main/java/com/axo/music/Data.kt <<'AXOEOF'
+          package com.axo.music
+
+          import retrofit2.Retrofit
+          import retrofit2.converter.gson.GsonConverterFactory
+          import retrofit2.http.GET
+          import retrofit2.http.Query
+
+          data class ApiHeaders(val status: String? = null, val error_message: String? = null)
+
+          data class Track(
+              val id: String,
+              val name: String,
+              val artist_name: String,
+              val album_name: String? = null,
+              val duration: Int = 0,
+              val image: String? = null,
+              val audio: String? = null,
+          )
+
+          data class Artist(val id: String, val name: String, val image: String? = null)
+
+          data class TracksResponse(val headers: ApiHeaders? = null, val results: List<Track>? = null)
+          data class ArtistsResponse(val headers: ApiHeaders? = null, val results: List<Artist>? = null)
+
+          interface JamendoApi {
+              @GET("tracks/")
+              suspend fun tracks(
+                  @Query("client_id") clientId: String,
+                  @Query("format") format: String = "json",
+                  @Query("limit") limit: Int = 30,
+                  @Query("search") search: String? = null,
+                  @Query("tags") tags: String? = null,
+                  @Query("artist_id") artistId: String? = null,
+                  @Query("order") order: String? = null,
+                  @Query("imagesize") imageSize: Int = 500,
+                  @Query("audioformat") audioFormat: String = "mp32",
+              ): TracksResponse
+
+              @GET("artists/")
+              suspend fun artists(
+                  @Query("client_id") clientId: String,
+                  @Query("format") format: String = "json",
+                  @Query("limit") limit: Int = 20,
+                  @Query("namesearch") nameSearch: String? = null,
+                  @Query("order") order: String? = null,
+                  @Query("imagesize") imageSize: Int = 300,
+              ): ArtistsResponse
+          }
+
+          object Catalog {
+              private val api: JamendoApi = Retrofit.Builder()
+                  .baseUrl("https://api.jamendo.com/v3.0/")
+                  .addConverterFactory(GsonConverterFactory.create())
+                  .build().create(JamendoApi::class.java)
+
+              private val id get() = BuildConfig.JAMENDO_CLIENT_ID.trim()
+              val configured get() = id.isNotBlank()
+
+              private fun verify(h: ApiHeaders?) {
+                  if (h != null && h.status == "failed") throw IllegalStateException(h.error_message ?: "Jamendo request failed")
+              }
+
+              private fun playable(l: List<Track>?): List<Track> = (l ?: emptyList()).filter { !it.audio.isNullOrBlank() }
+
+              suspend fun trending(): List<Track> {
+                  val r = api.tracks(id, order = "popularity_week"); verify(r.headers); return playable(r.results)
+              }
+              suspend fun search(q: String): List<Track> {
+                  val r = api.tracks(id, search = q); verify(r.headers); return playable(r.results)
+              }
+              suspend fun byTag(tag: String): List<Track> {
+                  val r = api.tracks(id, tags = tag, order = "popularity_month"); verify(r.headers); return playable(r.results)
+              }
+              suspend fun byArtist(artistId: String): List<Track> {
+                  val r = api.tracks(id, artistId = artistId, order = "popularity_total"); verify(r.headers); return playable(r.results)
+              }
+              suspend fun artists(): List<Artist> {
+                  val r = api.artists(id, order = "popularity_week"); verify(r.headers); return r.results ?: emptyList()
+              }
+              suspend fun searchArtists(q: String): List<Artist> {
+                  val r = api.artists(id, nameSearch = q, limit = 10); verify(r.headers); return r.results ?: emptyList()
+              }
+          }
+          AXOEOF
+          mkdir -p "$(dirname app/src/main/java/com/axo/music/MusicViewModel.kt)"
+          cat > app/src/main/java/com/axo/music/MusicViewModel.kt <<'AXOEOF'
+          package com.axo.music
+
+          import android.app.Application
+          import android.content.ComponentName
+          import android.content.Context
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.setValue
+          import androidx.lifecycle.AndroidViewModel
+          import androidx.lifecycle.viewModelScope
+          import androidx.media3.common.MediaItem
+          import androidx.media3.common.MediaMetadata
+          import androidx.media3.common.Player
+          import androidx.media3.session.MediaController
+          import androidx.media3.session.SessionToken
+          import com.google.common.util.concurrent.MoreExecutors
+          import com.google.gson.Gson
+          import com.google.gson.reflect.TypeToken
+          import kotlinx.coroutines.CancellationException
+          import kotlinx.coroutines.Job
+          import kotlinx.coroutines.delay
+          import kotlinx.coroutines.launch
+
+          class MusicViewModel(app: Application) : AndroidViewModel(app) {
+              private val prefs = app.getSharedPreferences("axo", Context.MODE_PRIVATE)
+              private val gson = Gson()
+              private var controller: MediaController? = null
+              private var queue: List<Track> = emptyList()
+              private var searchJob: Job? = null
+
+              var trending by mutableStateOf<List<Track>>(emptyList())
+              var favTracks by mutableStateOf<List<Track>>(emptyList())
+              var shelves by mutableStateOf<List<Pair<String, List<Track>>>>(emptyList())
+              var artists by mutableStateOf<List<Artist>>(emptyList())
+              var artistResults by mutableStateOf<List<Artist>>(emptyList())
+              var results by mutableStateOf<List<Track>>(emptyList())
+              var loading by mutableStateOf(false)
+              var error by mutableStateOf<String?>(null)
+              var searched by mutableStateOf(false)
+
+              var onboarded by mutableStateOf(prefs.getBoolean("onboarded", false))
+              var userName by mutableStateOf(prefs.getString("name", "") ?: "")
+              var genres by mutableStateOf((prefs.getStringSet("genres", emptySet()) ?: emptySet()).toSet())
+              var favArtistIds by mutableStateOf((prefs.getStringSet("artists", emptySet()) ?: emptySet()).toSet())
+              var openArtist by mutableStateOf<Artist?>(null)
+              var openArtistTracks by mutableStateOf<List<Track>>(emptyList())
+
+              var current by mutableStateOf<Track?>(null)
+              var isPlaying by mutableStateOf(false)
+              var position by mutableStateOf(0L)
+              var duration by mutableStateOf(0L)
+              var shuffle by mutableStateOf(false)
+              var repeat by mutableStateOf(Player.REPEAT_MODE_OFF)
+              var liked by mutableStateOf(loadLiked())
+
+              init {
+                  connect()
+                  loadHome()
+                  viewModelScope.launch {
+                      while (true) {
+                          controller?.let {
+                              position = it.currentPosition
+                              duration = it.duration.coerceAtLeast(0L)
+                          }
+                          delay(500)
+                      }
+                  }
+              }
+
+              private fun connect() {
+                  val ctx = getApplication<Application>()
+                  val token = SessionToken(ctx, ComponentName(ctx, PlaybackService::class.java))
+                  val future = MediaController.Builder(ctx, token).buildAsync()
+                  future.addListener({
+                      val c = future.get()
+                      controller = c
+                      c.addListener(object : Player.Listener {
+                          override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
+                          override fun onMediaItemTransition(item: MediaItem?, reason: Int) {
+                              current = queue.firstOrNull { it.id == item?.mediaId }
+                          }
+                      })
+                  }, MoreExecutors.directExecutor())
+              }
+
+              fun loadHome() = viewModelScope.launch {
+                  if (!Catalog.configured) {
+                      error = "Jamendo client ID missing. Add it as GitHub secret JAMENDO_CLIENT_ID and rebuild."
+                      return@launch
+                  }
+                  loading = true; error = null
+                  try {
+                      trending = Catalog.trending()
+                      artists = Catalog.artists()
+                      val tags = if (genres.isEmpty()) listOf("chillout", "electronic") else genres.take(3)
+                      shelves = tags.map { genreLabel(it) to Catalog.byTag(it) }
+                      favTracks = favArtistIds.take(3).flatMap { Catalog.byArtist(it).take(8) }
+                      if (trending.isEmpty() && artists.isEmpty()) error = "Jamendo returned no music. Check that your client ID is correct."
+                  } catch (e: CancellationException) {
+                      throw e
+                  } catch (e: Exception) {
+                      error = "Jamendo error: ${e.message}"
+                  }
+                  loading = false
+              }
+
+              fun completeOnboarding(name: String, g: Set<String>, a: Set<String>) {
+                  userName = name.trim(); genres = g; favArtistIds = a; onboarded = true
+                  prefs.edit().putBoolean("onboarded", true).putString("name", userName)
+                      .putStringSet("genres", HashSet(g)).putStringSet("artists", HashSet(a)).apply()
+                  loadHome()
+              }
+
+              fun editPreferences() { onboarded = false }
+
+              fun search(q: String) {
+                  searchJob?.cancel()
+                  if (q.isBlank()) {
+                      results = emptyList(); artistResults = emptyList(); searched = false; loading = false
+                      return
+                  }
+                  searchJob = viewModelScope.launch {
+                      delay(400)
+                      if (!Catalog.configured) { error = "Jamendo client ID missing."; return@launch }
+                      loading = true; error = null; searched = true
+                      try {
+                          results = Catalog.search(q)
+                          artistResults = Catalog.searchArtists(q)
+                      } catch (e: CancellationException) {
+                          throw e
+                      } catch (e: Exception) {
+                          error = "Search error: ${e.message}"
+                      }
+                      loading = false
+                  }
+              }
+
+              fun showArtist(a: Artist) {
+                  openArtist = a; openArtistTracks = emptyList()
+                  viewModelScope.launch {
+                      loading = true
+                      try { openArtistTracks = Catalog.byArtist(a.id) } catch (e: CancellationException) { throw e } catch (e: Exception) { error = "Artist error: ${e.message}" }
+                      loading = false
+                  }
+              }
+
+              fun closeArtist() { openArtist = null }
+
+              fun play(list: List<Track>, index: Int) {
+                  val c = controller ?: return
+                  queue = list
+                  val items = list.map { t ->
+                      MediaItem.Builder().setMediaId(t.id).setUri(t.audio)
+                          .setMediaMetadata(
+                              MediaMetadata.Builder().setTitle(t.name).setArtist(t.artist_name)
+                                  .setAlbumTitle(t.album_name)
+                                  .setArtworkUri(t.image?.let { android.net.Uri.parse(it) }).build()
+                          ).build()
+                  }
+                  c.setMediaItems(items, index, 0L)
+                  c.prepare(); c.play()
+                  current = list[index]
+              }
+
+              fun togglePlay() { controller?.let { if (it.isPlaying) it.pause() else it.play() } }
+              fun next() { controller?.seekToNextMediaItem() }
+              fun previous() { controller?.seekToPreviousMediaItem() }
+              fun seekTo(ms: Long) { controller?.seekTo(ms) }
+              fun skip(ms: Long) { controller?.let { it.seekTo((it.currentPosition + ms).coerceAtLeast(0)) } }
+              fun toggleShuffle() { shuffle = !shuffle; controller?.shuffleModeEnabled = shuffle }
+              fun cycleRepeat() {
+                  repeat = when (repeat) {
+                      Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                      Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                      else -> Player.REPEAT_MODE_OFF
+                  }
+                  controller?.repeatMode = repeat
+              }
+
+              fun toggleLike(t: Track) {
+                  liked = if (liked.any { it.id == t.id }) liked.filterNot { it.id == t.id } else liked + t
+                  prefs.edit().putString("liked", gson.toJson(liked)).apply()
+              }
+
+              private fun loadLiked(): List<Track> = try {
+                  gson.fromJson(prefs.getString("liked", "[]"), object : TypeToken<List<Track>>() {}.type) ?: emptyList()
+              } catch (e: Exception) { emptyList() }
+
+              override fun onCleared() { controller?.release(); super.onCleared() }
+          }
+          AXOEOF
+          echo part2-ok          mkdir -p "$(dirname app/src/main/java/com/axo/music/Screens.kt)"
           cat > app/src/main/java/com/axo/music/Screens.kt <<'AXOEOF'
           package com.axo.music
 
           import androidx.activity.compose.BackHandler
           import androidx.compose.animation.core.*
           import androidx.compose.foundation.background
+          import androidx.compose.foundation.border
           import androidx.compose.foundation.clickable
           import androidx.compose.foundation.layout.*
           import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.lazy.LazyListScope
           import androidx.compose.foundation.lazy.LazyRow
+          import androidx.compose.foundation.lazy.items
           import androidx.compose.foundation.lazy.itemsIndexed
           import androidx.compose.foundation.shape.CircleShape
           import androidx.compose.foundation.shape.RoundedCornerShape
@@ -427,9 +516,11 @@ jobs:
           import androidx.compose.ui.draw.alpha
           import androidx.compose.ui.draw.clip
           import androidx.compose.ui.draw.shadow
+          import androidx.compose.ui.geometry.Offset
           import androidx.compose.ui.graphics.Brush
           import androidx.compose.ui.graphics.Color
           import androidx.compose.ui.layout.ContentScale
+          import androidx.compose.ui.text.TextStyle
           import androidx.compose.ui.text.font.FontWeight
           import androidx.compose.ui.text.input.ImeAction
           import androidx.compose.ui.text.style.TextOverflow
@@ -437,6 +528,15 @@ jobs:
           import androidx.compose.ui.unit.sp
           import androidx.media3.common.Player
           import coil.compose.AsyncImage
+
+          val GENRES = listOf(
+              "Pop" to "pop", "Rock" to "rock", "Electronic" to "electronic", "Hip-Hop" to "hiphop",
+              "Jazz" to "jazz", "Classical" to "classical", "Lo-fi" to "lofi", "Chill" to "chillout",
+              "Ambient" to "ambient", "Indie" to "indie", "Metal" to "metal", "Acoustic" to "acoustic"
+          )
+
+          fun genreLabel(tag: String): String =
+              GENRES.firstOrNull { it.second == tag }?.first ?: tag.replaceFirstChar { it.uppercase() }
 
           private fun greeting(): String {
               val h = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
@@ -448,47 +548,171 @@ jobs:
               return "%d:%02d".format(s / 60, s % 60)
           }
 
+          fun Modifier.glass(radius: Int = 16): Modifier =
+              this.clip(RoundedCornerShape(radius.dp)).background(Color(0x14FFFFFF))
+                  .border(1.dp, Color(0x33C084FC), RoundedCornerShape(radius.dp))
+
+          @Composable
+          fun AxoBackground(content: @Composable BoxScope.() -> Unit) {
+              val t = rememberInfiniteTransition(label = "bg")
+              val a by t.animateFloat(0.25f, 0.55f, infiniteRepeatable(tween(4000), RepeatMode.Reverse), label = "a")
+              Box(
+                  Modifier.fillMaxSize().background(Bg)
+                      .background(Brush.radialGradient(listOf(Neon.copy(alpha = a), Color.Transparent), center = Offset(100f, 0f), radius = 1100f))
+                      .background(Brush.radialGradient(listOf(Color(0xFF5B21B6).copy(alpha = a * 0.7f), Color.Transparent), center = Offset(900f, 2000f), radius = 1300f)),
+                  content = content
+              )
+          }
+
+          @Composable
+          fun Logo(size: Int = 28) {
+              Text(
+                  "AXO",
+                  style = TextStyle(
+                      brush = Brush.linearGradient(listOf(Violet, Neon, Purple)),
+                      fontSize = size.sp, fontWeight = FontWeight.Black, letterSpacing = 6.sp
+                  )
+              )
+          }
+
+          @Composable
+          fun SectionTitle(t: String) {
+              Text(t, fontSize = 20.sp, fontWeight = FontWeight.Bold,
+                  modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 10.dp))
+          }
+
+          @Composable
+          fun Chip(label: String, on: Boolean, onClick: () -> Unit) {
+              val bg = if (on) Brush.linearGradient(listOf(Purple, Neon)) else Brush.linearGradient(listOf(Color(0x1AFFFFFF), Color(0x1AFFFFFF)))
+              Box(
+                  Modifier.clip(RoundedCornerShape(20.dp)).background(bg)
+                      .border(1.dp, if (on) Violet else Color(0x33C084FC), RoundedCornerShape(20.dp))
+                      .clickable { onClick() }.padding(horizontal = 16.dp, vertical = 8.dp)
+              ) { Text(label, color = Color.White, fontSize = 14.sp) }
+          }
+
+          @Composable
+          fun GradientButton(text: String, onClick: () -> Unit) {
+              Box(
+                  Modifier.fillMaxWidth().height(52.dp).clip(RoundedCornerShape(26.dp))
+                      .background(Brush.horizontalGradient(listOf(Purple, Neon))).clickable { onClick() },
+                  contentAlignment = Alignment.Center
+              ) { Text(text, fontWeight = FontWeight.Bold, color = Color.White) }
+          }
+
+          @Composable
+          fun ArtistBubble(a: Artist, selected: Boolean = false, onClick: () -> Unit) {
+              Column(Modifier.width(88.dp).clickable { onClick() }, horizontalAlignment = Alignment.CenterHorizontally) {
+                  Box(
+                      Modifier.size(80.dp).clip(CircleShape)
+                          .border(if (selected) 3.dp else 1.dp, if (selected) Neon else Color(0x44C084FC), CircleShape)
+                          .background(Bg2)
+                  ) {
+                      AsyncImage(a.image, a.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                      if (selected) Box(Modifier.fillMaxSize().background(Color(0x66A855F7)), contentAlignment = Alignment.Center) {
+                          Icon(Icons.Default.Check, null, tint = Color.White)
+                      }
+                  }
+                  Text(a.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+              }
+          }
+
+          @Composable
+          fun ArtistRow(list: List<Artist>, vm: MusicViewModel) {
+              LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                  items(list) { ar -> ArtistBubble(ar) { vm.showArtist(ar) } }
+              }
+          }
+
+          @OptIn(ExperimentalLayoutApi::class)
+          @Composable
+          fun OnboardingScreen(vm: MusicViewModel) {
+              var name by remember { mutableStateOf(vm.userName) }
+              var g by remember { mutableStateOf(vm.genres) }
+              var a by remember { mutableStateOf(vm.favArtistIds) }
+              AxoBackground {
+                  LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(24.dp)) {
+                      item {
+                          Logo(44)
+                          Text("Feel Every Beat.", color = Violet, modifier = Modifier.padding(bottom = 28.dp))
+                          Text("Create your profile", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                          Text("Your picks personalise the Home screen. Saved on this device.", color = Subtle, fontSize = 13.sp,
+                              modifier = Modifier.padding(top = 4.dp, bottom = 16.dp))
+                          OutlinedTextField(
+                              value = name, onValueChange = { name = it }, singleLine = true,
+                              label = { Text("Your name") }, modifier = Modifier.fillMaxWidth(),
+                              colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Neon, unfocusedBorderColor = Purple)
+                          )
+                          Text("Favourite genres", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 24.dp))
+                          FlowRow(
+                              modifier = Modifier.padding(top = 10.dp),
+                              horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)
+                          ) {
+                              GENRES.forEach { (label, tag) -> Chip(label, tag in g) { g = if (tag in g) g - tag else g + tag } }
+                          }
+                          Text("Favourite artists", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 24.dp, bottom = 10.dp))
+                          if (vm.artists.isEmpty()) Text(vm.error ?: "Loading artists...", color = Subtle, fontSize = 13.sp)
+                      }
+                      item {
+                          LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                              items(vm.artists) { ar -> ArtistBubble(ar, ar.id in a) { a = if (ar.id in a) a - ar.id else a + ar.id } }
+                          }
+                      }
+                      item {
+                          Spacer(Modifier.height(28.dp))
+                          GradientButton("Continue") { vm.completeOnboarding(name, g, a) }
+                          TextButton(onClick = { vm.completeOnboarding(name, g, a) }, modifier = Modifier.fillMaxWidth()) {
+                              Text("Skip for now", color = Subtle)
+                          }
+                      }
+                  }
+              }
+          }
+
           @Composable
           fun AxoApp(vm: MusicViewModel) {
               var tab by remember { mutableIntStateOf(0) }
               var showPlayer by remember { mutableStateOf(false) }
-              val bgBrush = Brush.verticalGradient(listOf(Color(0xFF1B1030), Bg, Bg))
 
+              if (!vm.onboarded) { OnboardingScreen(vm); return }
               if (showPlayer && vm.current != null) {
                   BackHandler { showPlayer = false }
                   PlayerScreen(vm) { showPlayer = false }
                   return
               }
+              if (vm.openArtist != null) BackHandler { vm.closeArtist() }
 
-              Scaffold(
-                  containerColor = Bg,
-                  bottomBar = {
-                      Column {
-                          if (vm.current != null) MiniPlayer(vm) { showPlayer = true }
-                          NavigationBar(containerColor = Bg2) {
-                              listOf(
-                                  Triple("Home", Icons.Default.Home, 0),
-                                  Triple("Search", Icons.Default.Search, 1),
-                                  Triple("Library", Icons.Default.LibraryMusic, 2),
-                              ).forEach { (label, icon, i) ->
-                                  NavigationBarItem(
-                                      selected = tab == i, onClick = { tab = i },
-                                      icon = { Icon(icon, label) }, label = { Text(label) },
-                                      colors = NavigationBarItemDefaults.colors(
-                                          selectedIconColor = Color.White, selectedTextColor = Neon,
-                                          indicatorColor = Purple, unselectedIconColor = Subtle, unselectedTextColor = Subtle
+              AxoBackground {
+                  Scaffold(
+                      containerColor = Color.Transparent,
+                      bottomBar = {
+                          Column {
+                              if (vm.current != null) MiniPlayer(vm) { showPlayer = true }
+                              NavigationBar(containerColor = Color(0xEE100D19)) {
+                                  listOf(
+                                      Triple("Home", Icons.Default.Home, 0),
+                                      Triple("Search", Icons.Default.Search, 1),
+                                      Triple("Library", Icons.Default.LibraryMusic, 2),
+                                  ).forEach { (label, icon, i) ->
+                                      NavigationBarItem(
+                                          selected = tab == i, onClick = { tab = i; vm.closeArtist() },
+                                          icon = { Icon(icon, label) }, label = { Text(label) },
+                                          colors = NavigationBarItemDefaults.colors(
+                                              selectedIconColor = Color.White, selectedTextColor = Neon,
+                                              indicatorColor = Purple, unselectedIconColor = Subtle, unselectedTextColor = Subtle
+                                          )
                                       )
-                                  )
+                                  }
                               }
                           }
                       }
-                  }
-              ) { pad ->
-                  Box(Modifier.fillMaxSize().background(bgBrush).padding(pad)) {
-                      when (tab) {
-                          0 -> HomeScreen(vm)
-                          1 -> SearchScreen(vm)
-                          else -> LibraryScreen(vm)
+                  ) { pad ->
+                      Box(Modifier.fillMaxSize().padding(pad)) {
+                          if (vm.openArtist != null) ArtistScreen(vm) else when (tab) {
+                              0 -> HomeScreen(vm)
+                              1 -> SearchScreen(vm)
+                              else -> LibraryScreen(vm)
+                          }
                       }
                   }
               }
@@ -496,40 +720,45 @@ jobs:
 
           @Composable
           fun HomeScreen(vm: MusicViewModel) {
-              LazyColumn(contentPadding = PaddingValues(vertical = 16.dp)) {
+              LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
                   item {
-                      Text("AXO MUSIC", color = Neon, fontWeight = FontWeight.Black, fontSize = 14.sp,
-                          letterSpacing = 4.sp, modifier = Modifier.padding(horizontal = 16.dp))
-                      Text(greeting(), fontSize = 28.sp, fontWeight = FontWeight.Bold,
-                          modifier = Modifier.padding(horizontal = 16.dp))
-                      Text("Feel Every Beat.", color = Subtle, modifier = Modifier.padding(start = 16.dp, bottom = 12.dp))
+                      Column(Modifier.padding(horizontal = 16.dp, vertical = 16.dp)) {
+                          Logo(20)
+                          Spacer(Modifier.height(8.dp))
+                          Text(greeting() + if (vm.userName.isNotBlank()) ", ${vm.userName}" else "", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                          Text("Feel Every Beat.", color = Violet, fontSize = 13.sp)
+                      }
                   }
                   if (vm.loading) item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(16.dp), color = Neon) }
                   vm.error?.let { e ->
                       item {
-                          Column(Modifier.padding(16.dp)) {
+                          Column(Modifier.padding(16.dp).glass().padding(16.dp)) {
                               Text(e, color = Violet)
                               Spacer(Modifier.height(8.dp))
                               Button(onClick = { vm.loadHome() }, colors = ButtonDefaults.buttonColors(containerColor = Purple)) { Text("Retry") }
                           }
                       }
                   }
+                  if (vm.artists.isNotEmpty()) item {
+                      SectionTitle("Popular Artists")
+                      ArtistRow(vm.artists, vm)
+                  }
                   item { Shelf("Trending Now", vm.trending, vm) }
-                  item { Shelf("Chill Vibes", vm.chill, vm) }
-                  item { Shelf("Electronic", vm.electronic, vm) }
+                  item { Shelf("Your Artists", vm.favTracks, vm) }
+                  vm.shelves.forEach { (title, list) -> item { Shelf(title, list, vm) } }
               }
           }
 
           @Composable
           fun Shelf(title: String, tracks: List<Track>, vm: MusicViewModel) {
               if (tracks.isEmpty()) return
-              Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold,
-                  modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp))
+              SectionTitle(title)
               LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                   itemsIndexed(tracks) { i, t ->
                       Column(Modifier.width(140.dp).clickable { vm.play(tracks, i) }) {
                           AsyncImage(t.image, t.name, contentScale = ContentScale.Crop,
-                              modifier = Modifier.size(140.dp).clip(RoundedCornerShape(14.dp)).background(Bg2))
+                              modifier = Modifier.size(140.dp).clip(RoundedCornerShape(16.dp))
+                                  .border(1.dp, Color(0x44C084FC), RoundedCornerShape(16.dp)).background(Bg2))
                           Text(t.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold,
                               modifier = Modifier.padding(top = 6.dp))
                           Text(t.artist_name, maxLines = 1, overflow = TextOverflow.Ellipsis, color = Subtle, fontSize = 12.sp)
@@ -539,61 +768,117 @@ jobs:
           }
 
           @Composable
-          fun SearchScreen(vm: MusicViewModel) {
-              var q by remember { mutableStateOf("") }
-              Column(Modifier.fillMaxSize().padding(16.dp)) {
-                  OutlinedTextField(
-                      value = q, onValueChange = { q = it }, singleLine = true,
-                      placeholder = { Text("Songs, artists, genres") },
-                      leadingIcon = { Icon(Icons.Default.Search, null) },
-                      modifier = Modifier.fillMaxWidth(),
-                      keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                      keyboardActions = KeyboardActions(onSearch = { vm.search(q) }),
-                      colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Neon, unfocusedBorderColor = Purple)
-                  )
-                  if (vm.loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp), color = Neon)
-                  vm.error?.let { Text(it, color = Violet, modifier = Modifier.padding(top = 8.dp)) }
-                  if (vm.searched && !vm.loading && vm.results.isEmpty() && vm.error == null)
-                      Text("No playable results found.", color = Subtle, modifier = Modifier.padding(top = 16.dp))
-                  TrackList(vm.results, vm)
+          fun TrackRow(t: Track, vm: MusicViewModel, onPlay: () -> Unit) {
+              val now = vm.current?.id == t.id
+              Row(
+                  Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).glass(14)
+                      .clickable { onPlay() }.padding(8.dp),
+                  verticalAlignment = Alignment.CenterVertically
+              ) {
+                  AsyncImage(t.image, null, contentScale = ContentScale.Crop,
+                      modifier = Modifier.size(54.dp).clip(RoundedCornerShape(10.dp)).background(Bg2))
+                  Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                      Text(t.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold,
+                          color = if (now) Neon else Color.White)
+                      Text("${t.artist_name} • ${fmt(t.duration * 1000L)}", color = Subtle, fontSize = 12.sp,
+                          maxLines = 1, overflow = TextOverflow.Ellipsis)
+                  }
+                  IconButton(onClick = { vm.toggleLike(t) }) {
+                      val on = vm.liked.any { it.id == t.id }
+                      Icon(if (on) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder, "Like", tint = if (on) Neon else Subtle)
+                  }
               }
           }
 
+          fun LazyListScope.trackItems(tracks: List<Track>, vm: MusicViewModel) {
+              itemsIndexed(tracks) { i, t -> TrackRow(t, vm) { vm.play(tracks, i) } }
+          }          @OptIn(ExperimentalLayoutApi::class)
           @Composable
-          fun TrackList(tracks: List<Track>, vm: MusicViewModel) {
-              LazyColumn {
-                  itemsIndexed(tracks) { i, t ->
-                      Row(Modifier.fillMaxWidth().clickable { vm.play(tracks, i) }.padding(vertical = 8.dp),
-                          verticalAlignment = Alignment.CenterVertically) {
-                          AsyncImage(t.image, null, contentScale = ContentScale.Crop,
-                              modifier = Modifier.size(54.dp).clip(RoundedCornerShape(10.dp)).background(Bg2))
-                          Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                              Text(t.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
-                              Text("${t.artist_name} • ${fmt(t.duration * 1000L)}", color = Subtle, fontSize = 12.sp,
-                                  maxLines = 1, overflow = TextOverflow.Ellipsis)
-                          }
-                          IconButton(onClick = { vm.toggleLike(t) }) {
-                              val on = vm.liked.any { it.id == t.id }
-                              Icon(if (on) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder, "Like",
-                                  tint = if (on) Neon else Subtle)
-                          }
+          fun SearchScreen(vm: MusicViewModel) {
+              var q by remember { mutableStateOf("") }
+              LaunchedEffect(q) { vm.search(q) }
+              LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
+                  item {
+                      OutlinedTextField(
+                          value = q, onValueChange = { q = it }, singleLine = true,
+                          placeholder = { Text("Songs, artists, genres") },
+                          leadingIcon = { Icon(Icons.Default.Search, null) },
+                          trailingIcon = { if (q.isNotEmpty()) IconButton(onClick = { q = "" }) { Icon(Icons.Default.Close, "Clear") } },
+                          modifier = Modifier.fillMaxWidth().padding(16.dp),
+                          keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                          keyboardActions = KeyboardActions(onSearch = { vm.search(q) }),
+                          colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Neon, unfocusedBorderColor = Purple)
+                      )
+                  }
+                  if (vm.loading) item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp), color = Neon) }
+                  vm.error?.let { e -> item { Text(e, color = Violet, modifier = Modifier.padding(16.dp)) } }
+                  if (q.isBlank()) {
+                      item {
+                          SectionTitle("Browse genres")
+                          FlowRow(
+                              modifier = Modifier.padding(horizontal = 16.dp),
+                              horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)
+                          ) { GENRES.forEach { (label, _) -> Chip(label, false) { q = label } } }
                       }
+                      if (vm.artists.isNotEmpty()) item {
+                          SectionTitle("Artists for you")
+                          ArtistRow(vm.artists, vm)
+                      }
+                      item { Shelf("Trending Now", vm.trending, vm) }
+                  } else {
+                      if (vm.artistResults.isNotEmpty()) item {
+                          SectionTitle("Artists")
+                          ArtistRow(vm.artistResults, vm)
+                      }
+                      if (vm.searched && !vm.loading && vm.results.isEmpty() && vm.error == null)
+                          item { Text("No songs found for this search.", color = Subtle, modifier = Modifier.padding(16.dp)) }
+                      if (vm.results.isNotEmpty()) item { SectionTitle("Songs") }
+                      trackItems(vm.results, vm)
                   }
               }
           }
 
           @Composable
           fun LibraryScreen(vm: MusicViewModel) {
-              Column(Modifier.fillMaxSize().padding(16.dp)) {
-                  Text("Liked Songs", fontSize = 26.sp, fontWeight = FontWeight.Bold)
-                  if (vm.liked.isEmpty()) Text("Tap the heart on any song to save it here.", color = Subtle,
-                      modifier = Modifier.padding(top = 12.dp))
-                  TrackList(vm.liked, vm)
+              LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
+                  item {
+                      Column(Modifier.padding(16.dp)) {
+                          Text(if (vm.userName.isNotBlank()) vm.userName else "Your Library", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                          TextButton(onClick = { vm.editPreferences() }) { Text("Edit profile & preferences", color = Violet) }
+                          Text("Liked Songs", fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+                          if (vm.liked.isEmpty()) Text("Tap the heart on any song to save it here.", color = Subtle,
+                              modifier = Modifier.padding(top = 8.dp))
+                      }
+                  }
+                  trackItems(vm.liked, vm)
               }
-          }          @Composable
+          }
+
+          @Composable
+          fun ArtistScreen(vm: MusicViewModel) {
+              val a = vm.openArtist ?: return
+              LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
+                  item {
+                      Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                          Row(Modifier.fillMaxWidth()) {
+                              IconButton(onClick = { vm.closeArtist() }) { Icon(Icons.Default.ArrowBack, "Back") }
+                          }
+                          AsyncImage(a.image, a.name, contentScale = ContentScale.Crop,
+                              modifier = Modifier.size(150.dp).clip(CircleShape).border(2.dp, Neon, CircleShape).background(Bg2))
+                          Text(a.name, fontSize = 26.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp, bottom = 12.dp))
+                          if (vm.loading) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Neon)
+                          else if (vm.openArtistTracks.isEmpty()) Text("No playable songs found.", color = Subtle)
+                          else GradientButton("Play all") { vm.play(vm.openArtistTracks, 0) }
+                      }
+                  }
+                  trackItems(vm.openArtistTracks, vm)
+              }
+          }
+
+          @Composable
           fun MiniPlayer(vm: MusicViewModel, onOpen: () -> Unit) {
               val t = vm.current ?: return
-              Column(Modifier.fillMaxWidth().background(Color(0xFF1A1228)).clickable { onOpen() }) {
+              Column(Modifier.fillMaxWidth().background(Color(0xF01A1228)).clickable { onOpen() }) {
                   val p = if (vm.duration > 0) vm.position.toFloat() / vm.duration else 0f
                   LinearProgressIndicator(progress = { p.coerceIn(0f, 1f) }, Modifier.fillMaxWidth().height(2.dp),
                       color = Neon, trackColor = Color.Transparent)
