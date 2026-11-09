@@ -216,7 +216,8 @@ jobs:
                   super.onDestroy()
               }
           }
-          AXOEOF           mkdir -p "$(dirname app/src/main/java/com/axo/music/MusicViewModel.kt)"
+          AXOEOF
+          mkdir -p "$(dirname app/src/main/java/com/axo/music/MusicViewModel.kt)"
           cat > app/src/main/java/com/axo/music/MusicViewModel.kt <<'AXOEOF'
           package com.axo.music
 
